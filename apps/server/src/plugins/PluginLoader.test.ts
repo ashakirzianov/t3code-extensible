@@ -1,11 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { AuthOrchestrationReadScope } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { McpServer } from "effect/ai";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
 import { serverBuild } from "../pluginHost.ts";
@@ -98,6 +100,19 @@ const toolDescription = (name: string) =>
     McpServer.McpServer,
     (server) => server.tools.find((entry) => entry.tool.name === name)?.tool.description,
   );
+
+/** What the plugin's published route answers for `path`. */
+const answerOf = (name: string, path: string) =>
+  Effect.gen(function* () {
+    const loader = yield* PluginLoader.PluginLoader;
+    const handler = loader.route(name);
+    if (handler === undefined) return undefined;
+    const request = HttpServerRequest.fromWeb(
+      new Request(`http://127.0.0.1/api/plugins/${name}${path}`),
+    );
+    const response = yield* handler(request, path, [AuthOrchestrationReadScope]);
+    return yield* Effect.promise(() => HttpServerResponse.toWeb(response).text());
+  });
 
 type TestServices =
   | PluginLoader.PluginLoader
@@ -234,6 +249,53 @@ it.effect("a build whose activate fails is closed and the old build keeps runnin
       expect(status?.build).toBe("b1");
       expect(status?.error).toContain("boom");
       expect(yield* readCurrent("alpha")).toBe("b1");
+    }),
+  ),
+);
+
+it.effect("a build that serves a route and then fails leaves the old build's route answering", () =>
+  withAlpha(
+    Effect.gen(function* () {
+      const loader = yield* PluginLoader.PluginLoader;
+      yield* writeBuild(
+        "alpha",
+        "b2",
+        pluginSource("alpha", "b2", {
+          activate: `(host) => Effect.gen(function* () {
+            yield* host.serve((_request, path) => Effect.succeed(HttpServerResponse.text("b2 " + path)));
+            return yield* Effect.fail(new Error("boom"));
+          })`,
+        }),
+      );
+
+      const failure = yield* Effect.flip(loader.reload("alpha", "b2"));
+      expect(failure._tag).toBe("PluginActivateError");
+      expect(yield* answerOf("alpha", "/ping")).toBe("b1 /ping");
+    }),
+  ),
+);
+
+it.effect("a build whose current link cannot be written is closed and reported", () =>
+  withAlpha(
+    Effect.gen(function* () {
+      const loader = yield* PluginLoader.PluginLoader;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* writeBuild("alpha", "b2", pluginSource("alpha", "b2"));
+      // A non-empty directory where the link goes: the rename over it fails.
+      const currentPath = path.join(yield* pluginsDir, "alpha", "current");
+      yield* fs.remove(currentPath);
+      yield* fs.makeDirectory(path.join(currentPath, "blocker"), { recursive: true });
+
+      const failure = yield* Effect.flip(loader.reload("alpha", "b2"));
+      expect(failure._tag).toBe("PluginCurrentLinkError");
+      expect(events()).toEqual(["activate alpha b1", "activate alpha b2", "dispose alpha b2"]);
+      const [status] = yield* loader.list;
+      expect(status?.build).toBe("b1");
+      expect(status?.status).toBe("failed");
+      expect(status?.error).toContain("current link could not be written");
+      expect(yield* answerOf("alpha", "/ping")).toBe("b1 /ping");
+      expect(yield* fs.exists(`${currentPath}.tmp`)).toBe(false);
     }),
   ),
 );

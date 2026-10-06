@@ -91,12 +91,22 @@ export class PluginActivateError extends Schema.TaggedError<PluginActivateError>
   }
 }
 
+export class PluginCurrentLinkError extends Schema.TaggedError<PluginCurrentLinkError>()(
+  "PluginCurrentLinkError",
+  { name: Schema.String, build: Schema.String, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return `Plugin "${this.name}" build "${this.build}" activated, but its current link could not be written; the build was closed again.`;
+  }
+}
+
 export type PluginLoadError =
   | PluginBuildNotFoundError
   | PluginImportError
   | PluginIdentityError
   | PluginBuildMismatchError
-  | PluginActivateError;
+  | PluginActivateError
+  | PluginCurrentLinkError;
 
 /** The error with its underlying cause, for the reload answer and the status list. */
 export const describeLoadError = (error: PluginLoadError): string =>
@@ -134,8 +144,11 @@ export interface PluginHost {
   readonly name: string;
   readonly build: string;
   readonly context: Context.Context<McpServer.McpServer>;
-  /** Serve `/api/plugins/<name>/<path>` for this build; released with the build's scope. */
-  readonly serve: (handler: PluginRouteHandler) => Effect.Effect<void, never, Scope.Scope>;
+  /**
+   * Serve `/api/plugins/<name>/<path>` with this build. The handler answers once
+   * the build is swapped in, until the next build replaces it; the last call wins.
+   */
+  readonly serve: (handler: PluginRouteHandler) => Effect.Effect<void>;
 }
 
 interface PluginModule {
@@ -148,6 +161,8 @@ interface RunningBuild {
   readonly build: string;
   readonly scope: Scope.Closeable;
   readonly loadedAt: string;
+  /** What `host.serve` registered during activation; published only once the build is swapped in. */
+  readonly route: PluginRouteHandler | undefined;
 }
 
 interface PluginRecord {
@@ -225,7 +240,6 @@ const make = Effect.gen(function* () {
   const mutex = yield* Semaphore.make(1);
   const pluginsDir = path.join(config.baseDir, "plugins");
   const records = new Map<string, PluginRecord>();
-  const routes = new Map<string, PluginRouteHandler>();
   let importCount = 0;
 
   const hostModuleUrl = yield* resolveHostModuleUrl;
@@ -336,18 +350,16 @@ const make = Effect.gen(function* () {
       });
     }
     const scope = yield* Scope.make();
+    // The route stays with this build until swapIn publishes it, so a build that
+    // serves and then fails never displaces the running build's handler.
+    let route: PluginRouteHandler | undefined;
     const host: PluginHost = {
       name,
       build,
       context,
       serve: (handler) =>
-        Effect.gen(function* () {
-          routes.set(name, handler);
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              if (routes.get(name) === handler) routes.delete(name);
-            }),
-          );
+        Effect.sync(() => {
+          route = handler;
         }),
     };
     yield* runActivate(activate as (host: PluginHost) => unknown, host, scope).pipe(
@@ -358,19 +370,25 @@ const make = Effect.gen(function* () {
       ),
     );
     const loadedAt = DateTime.formatIso(yield* DateTime.now);
-    return { build, scope, loadedAt } satisfies RunningBuild;
+    return { build, scope, loadedAt, route } satisfies RunningBuild;
   });
 
+  /**
+   * Repoints `current` atomically. A failure here fails the reload: a build that
+   * `current` does not name would be gone at the next startup, so it is not loaded.
+   */
   const pointCurrent = (name: string, build: string) =>
     Effect.gen(function* () {
       const currentPath = path.join(pluginsDir, name, "current");
       const tmpPath = `${currentPath}.tmp`;
       yield* fs.remove(tmpPath).pipe(Effect.ignore);
       yield* fs.symlink(path.join("builds", build), tmpPath);
-      yield* fs.rename(tmpPath, currentPath);
+      yield* fs
+        .rename(tmpPath, currentPath)
+        .pipe(Effect.tapError(() => fs.remove(tmpPath).pipe(Effect.ignore)));
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("plugin current link not updated", { name, build, cause }),
+        Effect.fail(new PluginCurrentLinkError({ name, build, cause: Cause.squash(cause) })),
       ),
     );
 
@@ -399,20 +417,31 @@ const make = Effect.gen(function* () {
 
   const reload: PluginLoader["Service"]["reload"] = (name, build) =>
     mutex.withPermits(1)(
-      Effect.gen(function* () {
-        if (!SEGMENT_PATTERN.test(name) || !(yield* isDirectory(path.join(pluginsDir, name)))) {
-          return yield* new PluginNotFoundError({ name });
-        }
-        // A request naming a build that does not exist is a 404, not a failed plugin.
-        const running = yield* loadBuild(name, build).pipe(
-          Effect.tapError((error) =>
-            error._tag === "PluginBuildNotFoundError" ? Effect.void : noteFailure(name, error),
-          ),
-        );
-        yield* pointCurrent(name, build);
-        yield* swapIn(name, running);
-        return status(name);
-      }),
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if (
+            !SEGMENT_PATTERN.test(name) ||
+            !(yield* restore(isDirectory(path.join(pluginsDir, name))))
+          ) {
+            return yield* new PluginNotFoundError({ name });
+          }
+          // A request naming a build that does not exist is a 404, not a failed plugin.
+          const running = yield* restore(loadBuild(name, build)).pipe(
+            Effect.tapError((error) =>
+              error._tag === "PluginBuildNotFoundError" ? Effect.void : noteFailure(name, error),
+            ),
+          );
+          // From here the new build is running: repoint and swap without a gap an
+          // interrupt could leave the build orphaned in, or `current` ahead of the swap.
+          yield* pointCurrent(name, build).pipe(
+            Effect.tapError((error) =>
+              Scope.close(running.scope, Exit.void).pipe(Effect.andThen(noteFailure(name, error))),
+            ),
+          );
+          yield* swapIn(name, running);
+          return status(name);
+        }),
+      ),
     );
 
   const loadCurrent = (name: string) =>
@@ -444,7 +473,7 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return PluginLoader.of({ list, reload, route: (name) => routes.get(name) });
+  return PluginLoader.of({ list, reload, route: (name) => records.get(name)?.running?.route });
 });
 
 export const layer = Layer.effect(PluginLoader, make);
