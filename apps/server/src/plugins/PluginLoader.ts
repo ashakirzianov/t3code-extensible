@@ -8,6 +8,7 @@
 import * as NodeModule from "node:module";
 import * as NodeURL from "node:url";
 
+import type { AuthEnvironmentScope } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -117,10 +118,15 @@ export interface PluginStatus {
   readonly loadedAt: string | undefined;
 }
 
-/** Answers `/api/plugins/<name>/<path>`; a failure or defect becomes a 500. */
+/**
+ * Answers `/api/plugins/<name>/<path>`; a failure or defect becomes a 500. The
+ * session already holds `orchestration:read` for GET and HEAD and `access:write`
+ * otherwise; `scopes` are all of it, for the handler to gate further.
+ */
 export type PluginRouteHandler = (
   request: HttpServerRequest.HttpServerRequest,
   path: string,
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
 ) => Effect.Effect<HttpServerResponse.HttpServerResponse>;
 
 /** What `activate` receives. The activation effect already runs with `context` provided. */
@@ -128,7 +134,7 @@ export interface PluginHost {
   readonly name: string;
   readonly build: string;
   readonly context: Context.Context<McpServer.McpServer>;
-  /** Serve `/api/plugins/<name>/<path>` (read scope) for this build; released with the build's scope. */
+  /** Serve `/api/plugins/<name>/<path>` for this build; released with the build's scope. */
   readonly serve: (handler: PluginRouteHandler) => Effect.Effect<void, never, Scope.Scope>;
 }
 

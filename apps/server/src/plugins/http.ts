@@ -38,6 +38,7 @@ const authenticate = (scope: AuthEnvironmentScope) =>
     if (!session.scopes.includes(scope)) {
       return yield* failEnvironmentScopeRequired(scope);
     }
+    return session;
   });
 
 const decodeReloadBody = Schema.decodeUnknownEffect(Schema.Struct({ build: Schema.String }));
@@ -97,19 +98,25 @@ const layerReload = (loader: PluginLoader.PluginLoader["Service"]) =>
     }),
   );
 
+// A plugin route reads with the read scope and does anything else with the write
+// scope; the handler gets the session's scopes to gate further on its own.
 const layerPluginRoutes = (loader: PluginLoader.PluginLoader["Service"]) =>
   HttpRouter.add(
     "*",
     "/api/plugins/:name/*",
     Effect.gen(function* () {
-      yield* authenticate(AuthOrchestrationReadScope);
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const session = yield* authenticate(
+        request.method === "GET" || request.method === "HEAD"
+          ? AuthOrchestrationReadScope
+          : AuthAccessWriteScope,
+      );
       const params = yield* HttpRouter.params;
       const handler = loader.route(params.name ?? "");
       if (handler === undefined) {
         return HttpServerResponse.empty({ status: 404 });
       }
-      const request = yield* HttpServerRequest.HttpServerRequest;
-      return yield* handler(request, `/${params["*"] ?? ""}`).pipe(
+      return yield* handler(request, `/${params["*"] ?? ""}`, session.scopes).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("plugin route failed", { plugin: params.name, cause }).pipe(
             Effect.as(HttpServerResponse.empty({ status: 500 })),
@@ -119,8 +126,10 @@ const layerPluginRoutes = (loader: PluginLoader.PluginLoader["Service"]) =>
     }),
   );
 
-export const layer = Layer.unwrap(
-  Effect.map(PluginLoader.PluginLoader, (loader) =>
-    Layer.mergeAll(layerList(loader), layerReload(loader), layerPluginRoutes(loader)),
-  ),
-).pipe(Layer.provide(PluginLoader.layer));
+/** The routes over a given loader; the server's `layer` provides the real one. */
+export const layerRoutes = (loader: PluginLoader.PluginLoader["Service"]) =>
+  Layer.mergeAll(layerList(loader), layerReload(loader), layerPluginRoutes(loader));
+
+export const layer = Layer.unwrap(Effect.map(PluginLoader.PluginLoader, layerRoutes)).pipe(
+  Layer.provide(PluginLoader.layer),
+);
