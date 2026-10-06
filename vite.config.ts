@@ -87,6 +87,8 @@ export default defineConfig({
       // Macroscope's glob-per-line ignore grammar, not Markdown: formatting
       // it rewrites `*` as `_` and joins lines.
       ".macroscope/ignore.md",
+      // The decision log's entries are recorded verbatim; the formatter rewrites their emphasis.
+      "DECISIONS.md",
       ".alchemy",
       "dist",
       "dist-electron",
