@@ -5,6 +5,7 @@ import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import packageJson from "./package.json" with { type: "json" };
 import { WeightedShardSequencer } from "./src/testUtils/weightedShardSequencer.ts";
+import { buildCommit } from "./src/plugins/buildCommit.ts";
 
 // The bundle used to inline only workspace packages, leaving every third-party
 // runtime dep external. External deps must exist on the real filesystem (the WSL
@@ -78,7 +79,10 @@ export default mergeConfig(
     pack: {
       // The executable embeds one entry; the history worker becomes a hidden
       // subcommand there instead of a sibling script.
-      entry: packExecutable ? ["src/bin.ts"] : ["src/bin.ts", "src/claude-history-worker.ts"],
+      // `src/pluginHost.ts` is the stable entry in-process plugins import; see docs/internals/plugins.md.
+      entry: packExecutable
+        ? ["src/bin.ts"]
+        : ["src/bin.ts", "src/claude-history-worker.ts", "src/pluginHost.ts"],
       outDir: packExecutable ? "dist-exe" : "dist",
       sourcemap: !packExecutable,
       clean: true,
@@ -112,6 +116,7 @@ export default mergeConfig(
       },
       define: {
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
+        __T3CODE_BUILD_COMMIT__: JSON.stringify(buildCommit(import.meta.dirname)),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),
         __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
           repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
