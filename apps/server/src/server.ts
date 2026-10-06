@@ -57,6 +57,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as PluginsHttp from "./plugins/http.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
@@ -677,10 +678,15 @@ const layerMakeRoutes = Layer.mergeAll(
   // sessions) rather than inline here. The orchestrator toolkit resolves
   // delegation targets through the same live adapter facade the V2
   // orchestrator uses, so MCP capability reporting can never drift from
-  // what dispatch can actually serve.
-  McpHttpServer.layer.pipe(
-    Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
-    Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+  // what dispatch can actually serve. Plugins register their tools on the
+  // same MCP server, so their loader sits above it.
+  PluginsHttp.layer.pipe(
+    Layer.provideMerge(
+      McpHttpServer.layer.pipe(
+        Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+        Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+      ),
+    ),
   ),
 ).pipe(
   // Both transports consume the same service instance, so caches single-flight across clients
