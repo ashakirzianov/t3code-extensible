@@ -2699,18 +2699,25 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  if (!isDesktopPreviewVersion(version)) {
-    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
-    if (publishConfig) {
-      buildConfig.publish = [publishConfig];
-    } else if (mockUpdates) {
-      buildConfig.publish = [
-        {
-          provider: "generic",
-          url: resolveMockUpdateServerUrl(mockUpdateServerPort),
-        },
-      ];
-    }
+  const previewVersion = isDesktopPreviewVersion(version);
+  const publishConfig = previewVersion
+    ? undefined
+    : yield* resolveGitHubPublishConfig(updateChannel);
+  if (publishConfig) {
+    buildConfig.publish = [publishConfig];
+  } else if (mockUpdates && !previewVersion) {
+    buildConfig.publish = [
+      {
+        provider: "generic",
+        url: resolveMockUpdateServerUrl(mockUpdateServerPort),
+      },
+    ];
+  } else {
+    // Left unset, electron-builder infers a GitHub feed from a GH_TOKEN or
+    // GITHUB_TOKEN in the environment, or from the project's repository, and
+    // a feed naming upstream's releases would update this fork into T3 Code.
+    // Null is its "no feed": no app-update.yml (DECISIONS.md, `update-feed`).
+    buildConfig.publish = null;
   }
 
   if (platform === "mac") {

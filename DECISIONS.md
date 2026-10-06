@@ -23,3 +23,8 @@ What the code cannot say about itself: decisions in force, grouped by area.
 
 ### plugin-surface
 **The fork exposes installed plugins and the reload request as HTTP routes under `/api/plugins` behind the host's auth: the list (name, build, loaded or failed, last error) with the read scope, reload with the admin scope; nothing in the descriptor or the RPC contracts changes.** 2026-10-06. A client must know what a server offers before relying on a plugin; routes keep the patch out of upstream's contracts, and the list is useless before auth. *Rejected:* a field in the public descriptor; RPC methods in `packages/contracts`. *See:* `pult/t3code-extensible`.
+
+## Packaging
+
+### update-feed
+**A build names an update feed only when `T3CODE_DESKTOP_UPDATE_REPOSITORY` (or CI's `GITHUB_REPOSITORY`) names a repository; otherwise `publish` is set to null and the app ships no `app-update.yml`.** 2026-10-06. Left unset, electron-builder infers a GitHub feed from a `GH_TOKEN` or `GITHUB_TOKEN` in the shell or from the project's repository, so a local build shipped no feed only by luck; a feed naming upstream's releases would replace the fork with vanilla T3 Code on the next update. *Rejected:* a feed naming `pingdotgg/t3code`; Pult's build-time switch that drops every feed, since the fork expects a release feed of its own. *See:* `pult/fork-release-feed`.
