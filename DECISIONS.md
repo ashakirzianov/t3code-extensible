@@ -26,5 +26,8 @@ What the code cannot say about itself: decisions in force, grouped by area.
 
 ## Packaging
 
+### ad-hoc-signing
+**An unsigned macOS build is signed ad hoc (`mac.identity: "-"`) with hardened runtime off; a `--signed` build is untouched.** 2026-10-06. Without it upstream's unsigned bundle carries only linker signatures and does not verify, so every local install of the fork needed a manual `codesign --force --deep --sign -`; an ad hoc signature has no team id, and hardened runtime's library validation would then refuse Electron's frameworks. *Rejected:* the manual `codesign` step at install. *See:* `pult/t3code-extensible`, Pult's `ad-hoc-signing`.
+
 ### update-feed
 **A build names an update feed only when `T3CODE_DESKTOP_UPDATE_REPOSITORY` (or CI's `GITHUB_REPOSITORY`) names a repository; otherwise `publish` is set to null and the app ships no `app-update.yml`.** 2026-10-06. Left unset, electron-builder infers a GitHub feed from a `GH_TOKEN` or `GITHUB_TOKEN` in the shell or from the project's repository, so a local build shipped no feed only by luck; a feed naming upstream's releases would replace the fork with vanilla T3 Code on the next update. *Rejected:* a feed naming `pingdotgg/t3code`; Pult's build-time switch that drops every feed, since the fork expects a release feed of its own. *See:* `pult/fork-release-feed`.
